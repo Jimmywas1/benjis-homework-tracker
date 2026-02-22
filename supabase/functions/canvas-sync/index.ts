@@ -275,10 +275,19 @@ serve(async (req) => {
 
               if (a.submission) {
                 const ws = a.submission.workflow_state;
-                if (ws === "graded") {
+                const hasScore = a.submission.score != null;
+
+                // A teacher can grade a paper test or manually enter a score in Canvas
+                // without a digital submission, leaving workflow_state as 'unsubmitted'.
+                // So we treat ANY non-null score as the definitive signal that the 
+                // assignment is graded and done.
+                if (hasScore) {
                   status = "done";
                   grade = a.submission.grade || undefined;
-                  if (a.submission.score != null) score = a.submission.score;
+                  score = a.submission.score!;
+                } else if (ws === "graded") {
+                  status = "done";
+                  grade = a.submission.grade || undefined;
                 } else if (ws === "submitted" || ws === "pending_review") {
                   status = "done";
                 } else if (a.has_submitted_submissions) {
