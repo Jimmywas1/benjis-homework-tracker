@@ -169,10 +169,9 @@ serve(async (req) => {
 
         courses.map(async (course) => {
           try {
-            // Try fetching assignments 
-            let assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
-
-            let assignRes = await fetch(assignUrl, { headers });
+            // Fetch assignments (submission data here is for the *observer*, not the student)
+            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
+            const assignRes = await fetch(assignUrl, { headers });
 
             if (!assignRes.ok) {
               const text = await assignRes.text();
@@ -182,53 +181,26 @@ serve(async (req) => {
 
             let assignments: CanvasAssignment[] = await assignRes.json();
 
-            // If observer got 0 assignments, try fetching without submission include
-            // and get submissions separately
-            if (assignments.length === 0 && studentId) {
-              console.log(`Retrying "${course.name}" for ${studentName} without submission include...`);
-              assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`;
-              assignRes = await fetch(assignUrl, { headers });
-
-              if (assignRes.ok) {
-                assignments = await assignRes.json();
-                console.log(`  Retry got ${assignments.length} assignments`);
-              } else {
-                await assignRes.text();
-              }
-
-              // If still empty, try the student's submissions endpoint directly
-              if (assignments.length === 0) {
-                console.log(`Trying submissions endpoint for student ${studentId} in course ${course.id}...`);
-                const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100&include[]=assignment`;
-                const subRes = await fetch(subUrl, { headers });
-
-                if (subRes.ok) {
-                  const submissions = await subRes.json();
-                  console.log(`  Submissions endpoint returned ${submissions.length} items`);
-
-                  // Convert submissions to assignment format
-                  for (const sub of submissions) {
-                    if (sub.assignment) {
-                      assignments.push({
-                        id: sub.assignment.id,
-                        name: sub.assignment.name,
-                        due_at: sub.assignment.due_at,
-                        lock_at: sub.assignment.lock_at ?? null,
-                        course_id: course.id,
-                        has_submitted_submissions: sub.workflow_state !== "unsubmitted",
-                        points_possible: sub.assignment.points_possible ?? null,
-                        submission: {
-                          workflow_state: sub.workflow_state,
-                          grade: sub.grade,
-                          score: sub.score,
-                        },
-                      });
-                    }
+            // For observer accounts: the include[]=submission above returns the PARENT's
+            // own submission (always null). We must fetch the *student's* submissions
+            // separately and overlay them so grades/scores are correct.
+            if (studentId && assignments.length > 0) {
+              const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100`;
+              const subRes = await fetch(subUrl, { headers });
+              if (subRes.ok) {
+                const studentSubs: Array<{ assignment_id: number; workflow_state: string; grade: string | null; score: number | null }> = await subRes.json();
+                const subMap = new Map(studentSubs.map(s => [s.assignment_id, s]));
+                // Overlay student submission data onto each assignment
+                assignments = assignments.map(a => {
+                  const studentSub = subMap.get(a.id);
+                  if (studentSub) {
+                    return { ...a, submission: { workflow_state: studentSub.workflow_state, grade: studentSub.grade, score: studentSub.score } };
                   }
-                } else {
-                  const text = await subRes.text();
-                  console.log(`  Submissions endpoint failed:`, subRes.status, text);
-                }
+                  return a;
+                });
+                console.log(`Overlaid student submissions for "${course.name}" (${studentSubs.length} subs)`);
+              } else {
+                console.warn(`Could not fetch student submissions for "${course.name}":`, subRes.status);
               }
             }
 
@@ -277,10 +249,6 @@ serve(async (req) => {
                 const ws = a.submission.workflow_state;
                 const hasScore = a.submission.score != null;
 
-                // A teacher can grade a paper test or manually enter a score in Canvas
-                // without a digital submission, leaving workflow_state as 'unsubmitted'.
-                // So we treat ANY non-null score as the definitive signal that the 
-                // assignment is graded and done.
                 if (hasScore) {
                   status = "done";
                   grade = a.submission.grade || undefined;
