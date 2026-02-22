@@ -11,11 +11,18 @@ export default function AIChatPanel({ onClose }: { onClose: () => void }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  // Always scroll to the bottom anchor whenever messages change
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Auto-focus the input when the panel opens
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   const send = async () => {
     if (!input.trim() || isLoading) return;
@@ -91,9 +98,9 @@ export default function AIChatPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-card border-l border-border">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+    <div className="flex flex-col bg-card border-l border-border" style={{ height: '100dvh' }}>
+      {/* Header — always visible at top */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
         <div className="flex items-center gap-2">
           <Bot size={18} className="text-primary" />
           <span className="font-display font-bold text-foreground text-sm">AI Homework Helper</span>
@@ -103,12 +110,12 @@ export default function AIChatPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+      {/* Messages — scrollable middle, grows to fill space */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
         {messages.length === 0 && (
           <div className="text-center text-muted-foreground text-sm font-body mt-8 space-y-2">
             <Bot size={32} className="mx-auto text-primary/50" />
-            <p>Hey Benji! 👋</p>
+            <p>Hey! 👋</p>
             <p className="text-xs">Ask me anything about your homework!</p>
           </div>
         )}
@@ -120,11 +127,10 @@ export default function AIChatPanel({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <div
-              className={`rounded-xl px-3 py-2 max-w-[85%] text-sm font-body ${
-                m.role === 'user'
+              className={`rounded-xl px-3 py-2 max-w-[85%] text-sm font-body ${m.role === 'user'
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-secondary text-foreground'
-              }`}
+                }`}
             >
               {m.role === 'assistant' ? (
                 <div className="prose prose-sm prose-invert max-w-none">
@@ -151,15 +157,18 @@ export default function AIChatPanel({ onClose }: { onClose: () => void }) {
             </div>
           </div>
         )}
+        {/* Invisible anchor — always scrolled into view so input is never obscured */}
+        <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-3 border-t border-border">
+      {/* Input — always pinned at bottom, never scrolls away */}
+      <div className="p-3 border-t border-border flex-shrink-0">
         <form
           onSubmit={(e) => { e.preventDefault(); send(); }}
           className="flex gap-2"
         >
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about your homework..."
