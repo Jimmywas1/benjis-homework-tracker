@@ -10,6 +10,7 @@ interface CanvasAssignment {
   id: number;
   name: string;
   due_at: string | null;
+  lock_at: string | null;
   course_id: number;
   has_submitted_submissions: boolean;
   points_possible: number | null;
@@ -212,6 +213,7 @@ serve(async (req) => {
                         id: sub.assignment.id,
                         name: sub.assignment.name,
                         due_at: sub.assignment.due_at,
+                        lock_at: sub.assignment.lock_at ?? null,
                         course_id: course.id,
                         has_submitted_submissions: sub.workflow_state !== "unsubmitted",
                         points_possible: sub.assignment.points_possible ?? null,
@@ -234,33 +236,30 @@ serve(async (req) => {
 
             for (const a of assignments) {
               const now = new Date();
-              let dueDateStr = "";
-              let dueStatus: "overdue" | "upcoming" | "undated" = "undated";
 
-              // Enforce perpetual Dynamic Quarter filtering
-              if (a.due_at && activeQuarterStart && activeQuarterEnd) {
-                const dueDate = new Date(a.due_at);
-                // 10-day buffer to ensure assignments slightly outside bounds aren't lost
+              // Resolve the effective due date: prefer lock_at (submission deadline) over due_at.
+              // Skip the assignment entirely if neither exists.
+              const effectiveDueAt = a.lock_at || a.due_at;
+              if (!effectiveDueAt) continue; // No date → off the board
+
+              // Enforce perpetual Dynamic Quarter filtering (uses due_at for boundary check)
+              if (activeQuarterStart && activeQuarterEnd) {
+                const checkDate = new Date(a.due_at || effectiveDueAt);
                 const graceStart = new Date(activeQuarterStart.getTime() - 10 * 24 * 60 * 60 * 1000);
                 const graceEnd = new Date(activeQuarterEnd.getTime() + 10 * 24 * 60 * 60 * 1000);
-
-                if (dueDate < graceStart || dueDate > graceEnd) {
-                  continue; // Exclude assignment outside of active quarter
-                }
+                if (checkDate < graceStart || checkDate > graceEnd) continue;
               }
 
-              if (a.due_at) {
-                const dueDate = new Date(a.due_at);
+              const dueDate = new Date(effectiveDueAt);
 
-                // Fallback: If we couldn't resolve a quarter from Canvas, filter older than 90 days.
-                if (!activeQuarterStart) {
-                  const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
-                  if (daysPast > 90) continue;
-                }
-
-                dueDateStr = dueDate.toISOString().split("T")[0];
-                dueStatus = dueDate < now ? "overdue" : "upcoming";
+              // Fallback: If we couldn't resolve a quarter from Canvas, filter older than 90 days.
+              if (!activeQuarterStart) {
+                const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
+                if (daysPast > 90) continue;
               }
+
+              const dueDateStr = dueDate.toISOString().split("T")[0];
+              const dueStatus: "overdue" | "upcoming" = dueDate < now ? "overdue" : "upcoming";
 
               let status: "todo" | "progress" | "done" = "todo";
               let grade: string | undefined;
