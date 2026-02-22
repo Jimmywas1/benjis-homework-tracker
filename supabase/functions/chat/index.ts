@@ -11,28 +11,32 @@ serve(async (req) => {
 
   try {
     const { messages } = await req.json();
-    const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
-    if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        stream: true,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a friendly and encouraging homework helper for middle school students. Help them stay organized, understand assignments, and give study tips. Keep answers concise, supportive, and age-appropriate. Use emojis occasionally to be fun. If asked about specific subjects, give helpful explanations and strategies.",
+    // Convert OpenAI-style messages to Gemini format
+    // Gemini uses "model" instead of "assistant" and wraps content in parts[]
+    const geminiContents = messages.map((m: { role: string; content: string }) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{
+              text: "You are a friendly and encouraging homework helper for middle school students. Help them stay organized, understand assignments, and give study tips. Keep answers concise, supportive, and age-appropriate. Use emojis occasionally to be fun. If asked about specific subjects, give helpful explanations and strategies.",
+            }],
           },
-          ...messages,
-        ],
-      }),
-    });
+          contents: geminiContents,
+          generationConfig: { maxOutputTokens: 1024 },
+        }),
+      }
+    );
 
     if (!response.ok) {
       if (response.status === 429) {
@@ -42,15 +46,18 @@ serve(async (req) => {
         });
       }
       const t = await response.text();
-      console.error("OpenAI error:", response.status, t);
+      console.error("Gemini error:", response.status, t);
       return new Response(JSON.stringify({ error: "AI error — try again." }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    return new Response(response.body, {
-      headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+    const data = await response.json();
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "Sorry, I couldn't generate a response.";
+
+    return new Response(JSON.stringify({ content }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
     console.error("chat error:", e);
