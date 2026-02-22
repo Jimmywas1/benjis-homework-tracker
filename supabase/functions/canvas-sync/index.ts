@@ -169,8 +169,10 @@ serve(async (req) => {
 
         courses.map(async (course) => {
           try {
-            // Fetch assignments (submission data here is for the *observer*, not the student)
-            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
+            // For observer accounts, pass student_ids[] so Canvas returns the *student's*
+            // submission for each assignment (not the observer/parent's own submission).
+            const studentParam = studentId ? `&student_ids[]=${studentId}` : "";
+            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission${studentParam}&order_by=due_at`;
             const assignRes = await fetch(assignUrl, { headers });
 
             if (!assignRes.ok) {
@@ -179,30 +181,7 @@ serve(async (req) => {
               return;
             }
 
-            let assignments: CanvasAssignment[] = await assignRes.json();
-
-            // For observer accounts: the include[]=submission above returns the PARENT's
-            // own submission (always null). We must fetch the *student's* submissions
-            // separately and overlay them so grades/scores are correct.
-            if (studentId && assignments.length > 0) {
-              const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100`;
-              const subRes = await fetch(subUrl, { headers });
-              if (subRes.ok) {
-                const studentSubs: Array<{ assignment_id: number; workflow_state: string; grade: string | null; score: number | null }> = await subRes.json();
-                const subMap = new Map(studentSubs.map(s => [s.assignment_id, s]));
-                // Overlay student submission data onto each assignment
-                assignments = assignments.map(a => {
-                  const studentSub = subMap.get(a.id);
-                  if (studentSub) {
-                    return { ...a, submission: { workflow_state: studentSub.workflow_state, grade: studentSub.grade, score: studentSub.score } };
-                  }
-                  return a;
-                });
-                console.log(`Overlaid student submissions for "${course.name}" (${studentSubs.length} subs)`);
-              } else {
-                console.warn(`Could not fetch student submissions for "${course.name}":`, subRes.status);
-              }
-            }
+            const assignments: CanvasAssignment[] = await assignRes.json();
 
             console.log(`Course "${course.name}" (${studentName}): ${assignments.length} assignments`);
 
