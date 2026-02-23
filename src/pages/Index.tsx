@@ -45,22 +45,25 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const matchesStudent = (nameField: string | undefined) => {
+    const name = nameField?.toLowerCase() || 'benji';
+    const targetId = studentId?.toLowerCase() || '';
+    if (targetId === 'benji' && name === 'benjamin') return true;
+    return name === targetId;
+  };
+
   // Filter assignments for the active student
   const filteredAssignments = useMemo(() => {
-    if (isAbout) return []; // No need to filter if on About page
-    return assignmentsHook.assignments.filter((a) => {
-      // Default missing studentNames to 'benji' for backwards compatibility
-      const name = a.studentName?.toLowerCase() || 'benji';
-      const targetId = studentId?.toLowerCase() || '';
-
-      // Canvas returns "Benjamin", but our URL router uses "/benji/"
-      if (targetId === 'benji' && name === 'benjamin') return true;
-
-      return name === targetId;
-    });
+    if (isAbout) return [];
+    return assignmentsHook.assignments.filter(a => matchesStudent(a.studentName));
   }, [assignmentsHook.assignments, studentId, isAbout]);
 
-  // Create a localized clone of the assignments hook to pass down ONLY filtered data, 
+  // Filter Canvas course grades for the active student
+  const filteredCourseGrades = useMemo(() => {
+    return canvasSyncHook.courseGrades.filter(cg => matchesStudent(cg.studentName));
+  }, [canvasSyncHook.courseGrades, studentId]);
+
+  // Create a localized clone of the assignments hook to pass down ONLY filtered data,
   // but keep the full create/update/delete functionality intact.
   const scopedAssignmentsHook = useMemo(() => ({
     ...assignmentsHook,
@@ -93,7 +96,7 @@ const Index = () => {
               {isAbout ? (
                 <About />
               ) : isStats ? (
-                <Stats assignments={filteredAssignments} />
+                <Stats assignments={filteredAssignments} courseGrades={filteredCourseGrades} />
               ) : (
                 <KanbanBoard assignmentsHook={scopedAssignmentsHook} canvasSyncHook={canvasSyncHook} />
               )}

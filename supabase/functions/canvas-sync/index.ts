@@ -25,6 +25,33 @@ interface CanvasCourse {
   id: number;
   name: string;
   course_code: string;
+  enrollments?: Array<{
+    type: string;
+    computed_current_score?: number;
+    computed_current_grade?: string;
+  }>;
+  grading_periods?: Array<{
+    id: number;
+    title: string;
+    start_date: string;
+    end_date: string;
+  }>;
+}
+
+function cleanSubjectName(courseName: string): string {
+  return courseName
+    .replace(/\s*H\*\s*/g, " ")
+    .replace(/\s*\(.*?\)\s*/g, "")
+    .replace(/\s*-\s*\d{4}-\d{2,4}\s*/g, "")
+    .replace(/\s*-\s*[A-Z][a-z]+(\s|$).*$/g, "")
+    .replace(/^S\d+\s+/i, "")
+    .replace(/Honors/gi, "Hon.")
+    .replace(/Language Arts/gi, "Lang Arts")
+    .replace(/Physical Science/gi, "Phys Sci")
+    .replace(/Civics\/Economics/gi, "Civics/Econ")
+    .replace(/Technological/gi, "Tech")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 interface CanvasUser {
@@ -97,6 +124,15 @@ serve(async (req) => {
       studentName?: string;
     }> = [];
 
+    const allCourseGrades: Array<{
+      courseId: number;
+      subject: string;
+      currentScore: number | null;
+      finalScore: number | null;
+      currentGrade: string | null;
+      studentName?: string;
+    }> = [];
+
     // If we have observees, iter over them. Otherwise, run once as the primary user.
     const usersToFetch = observees.length > 0 ? observees : [{ id: null, name: "Student" }];
 
@@ -106,10 +142,11 @@ serve(async (req) => {
 
       console.log(`Fetching courses for student: ${studentName}`);
 
-      // Fetch active courses
+      // Fetch active courses — include total_scores so each course object
+      // contains embedded enrollment data with computed grade percentages.
       const coursesUrl = studentId
-        ? `${CANVAS_BASE_URL}/api/v1/users/${studentId}/courses?enrollment_state=active&per_page=50&include[]=total_scores`
-        : `${CANVAS_BASE_URL}/api/v1/courses?enrollment_state=active&per_page=50`;
+        ? `${CANVAS_BASE_URL}/api/v1/users/${studentId}/courses?enrollment_state=active&per_page=50&include[]=total_scores&include[]=grading_periods`
+        : `${CANVAS_BASE_URL}/api/v1/courses?enrollment_state=active&per_page=50&include[]=total_scores&include[]=grading_periods`;
 
       const coursesRes = await fetch(coursesUrl, { headers });
 
@@ -122,47 +159,207 @@ serve(async (req) => {
       const courses: CanvasCourse[] = await coursesRes.json();
       console.log(`Found ${courses.length} courses for ${studentName}`);
 
-      // NEW: Dynamically resolve the active quarter from the school's Canvas definitions to ensure perpetual filtering.
+      const firstName = studentName === "Student" ? undefined : studentName.split(' ')[0];
+
+      // ── Resolve active grading period first (needed for quarter-specific grades) ──
+      let activeGradingPeriodId: number | null = null;
       let activeQuarterStart: Date | null = null;
       let activeQuarterEnd: Date | null = null;
       let activeQuarterTitle: string = "Unknown Quarter";
 
       if (courses.length > 0) {
         try {
-          const firstCourseId = courses[0].id;
-          const gpRes = await fetch(`${CANVAS_BASE_URL}/api/v1/courses/${firstCourseId}?include[]=grading_periods`, { headers });
+          const gpRes = await fetch(
+            `${CANVAS_BASE_URL}/api/v1/courses/${courses[0].id}?include[]=grading_periods`,
+            { headers }
+          );
           if (gpRes.ok) {
             const courseData = await gpRes.json();
-            const gradingPeriods = courseData.grading_periods;
-
-            if (gradingPeriods && Array.isArray(gradingPeriods) && gradingPeriods.length > 0) {
+            const gradingPeriods: any[] = courseData.grading_periods ?? [];
+            if (gradingPeriods.length > 0) {
               const now = new Date();
               let targetQuarter = gradingPeriods.find(gp => {
                 const s = new Date(gp.start_date);
                 const e = new Date(gp.end_date);
                 return now >= s && now <= e;
               });
-
-              // If dates fall in a gap (e.g., winter break), find the closest quarter
               if (!targetQuarter) {
                 targetQuarter = [...gradingPeriods].sort((a, b) => {
-                  const distA = Math.min(Math.abs(now.getTime() - new Date(a.start_date).getTime()), Math.abs(now.getTime() - new Date(a.end_date).getTime()));
-                  const distB = Math.min(Math.abs(now.getTime() - new Date(b.start_date).getTime()), Math.abs(now.getTime() - new Date(b.end_date).getTime()));
+                  const distA = Math.min(
+                    Math.abs(now.getTime() - new Date(a.start_date).getTime()),
+                    Math.abs(now.getTime() - new Date(a.end_date).getTime())
+                  );
+                  const distB = Math.min(
+                    Math.abs(now.getTime() - new Date(b.start_date).getTime()),
+                    Math.abs(now.getTime() - new Date(b.end_date).getTime())
+                  );
                   return distA - distB;
                 })[0];
               }
-
               if (targetQuarter) {
+                activeGradingPeriodId = targetQuarter.id;
                 activeQuarterStart = new Date(targetQuarter.start_date);
                 activeQuarterEnd = new Date(targetQuarter.end_date);
                 activeQuarterTitle = targetQuarter.title || "Target Quarter";
-                console.log(`Dynamically resolved active quarter for ${studentName}: ${activeQuarterTitle} (${activeQuarterStart.toISOString()} - ${activeQuarterEnd.toISOString()})`);
+                console.log(`Active quarter for ${studentName}: ${activeQuarterTitle} (id=${activeGradingPeriodId})`);
               }
             }
           }
         } catch (err) {
           console.error(`Failed to resolve grading periods for ${studentName}:`, err);
         }
+      }
+
+      // ── Fetch quarter-specific enrollment grades ────────────────────────────
+      const courseGradeMap = new Map<number, { currentScore: number | null; finalScore: number | null; currentGrade: string | null }>();
+      if (studentId) {
+        // Per-course enrollment — most reliable for observer accounts.
+        // Each course resolves its OWN active grading period ID so subjects that use
+        // different Canvas grading period records (same quarter, different ID) are handled correctly.
+        await Promise.all(courses.map(async (course) => {
+          try {
+            // 1. Try grading periods already embedded by include[]=grading_periods on the courses list
+            let gpList: any[] = course.grading_periods ?? [];
+
+            // 2. If not embedded (API didn't return them), fetch for this specific course
+            if (gpList.length === 0) {
+              try {
+                const gpCourseRes = await fetch(
+                  `${CANVAS_BASE_URL}/api/v1/courses/${course.id}?include[]=grading_periods`,
+                  { headers }
+                );
+                if (gpCourseRes.ok) {
+                  gpList = (await gpCourseRes.json()).grading_periods ?? [];
+                }
+              } catch { /* silently fall back to global */ }
+            }
+
+            // 3. Pick the active (or closest) grading period for this course.
+            // Default to NO filter (YTD grade) — only add the GP filter when we have
+            // confirmed grading periods for this specific course. Using the global GP ID
+            // on a course that doesn't use grading periods returns a false 0, not null.
+            let courseGPParam = "";
+            if (gpList.length > 0) {
+              const now = new Date();
+              let targetGP: any = gpList.find((gp: any) =>
+                now >= new Date(gp.start_date) && now <= new Date(gp.end_date)
+              );
+              if (!targetGP) {
+                targetGP = [...gpList].sort((a: any, b: any) => {
+                  const distA = Math.min(
+                    Math.abs(now.getTime() - new Date(a.start_date).getTime()),
+                    Math.abs(now.getTime() - new Date(a.end_date).getTime())
+                  );
+                  const distB = Math.min(
+                    Math.abs(now.getTime() - new Date(b.start_date).getTime()),
+                    Math.abs(now.getTime() - new Date(b.end_date).getTime())
+                  );
+                  return distA - distB;
+                })[0];
+              }
+              if (targetGP) {
+                courseGPParam = `&grading_period_id=${targetGP.id}`;
+                console.log(`Course "${cleanSubjectName(course.name)}" GP: ${targetGP.title} (id=${targetGP.id})`);
+              }
+            }
+
+            const enrollRes = await fetch(
+              `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades${courseGPParam}&per_page=5`,
+              { headers }
+            );
+            if (enrollRes.ok) {
+              const enrollments: any[] = await enrollRes.json();
+              const e = enrollments[0];
+              if (e) {
+                let score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
+                let final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
+                const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
+
+                // GP filter returned all-zero (teacher hasn't posted Q grades yet).
+                // Fall back to YTD (no GP filter) to get the last meaningful grade.
+                if (courseGPParam && score === 0 && final === 0 && !grade) {
+                  const ytdRes = await fetch(
+                    `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades&per_page=5`,
+                    { headers }
+                  );
+                  if (ytdRes.ok) {
+                    const ytdE = (await ytdRes.json())[0];
+                    const ytdScore: number | null = ytdE?.grades?.override_score ?? ytdE?.grades?.current_score ?? ytdE?.computed_current_score ?? null;
+                    if (ytdScore !== null && ytdScore > 0) {
+                      score = ytdScore;
+                      final = ytdE?.grades?.final_score ?? ytdE?.computed_final_score ?? null;
+                      console.log(`GP=0 fallback "${cleanSubjectName(course.name)}" (${studentName}): YTD=${score}%`);
+                    }
+                  }
+                }
+
+                if (score !== null || grade !== null) {
+                  courseGradeMap.set(course.id, { currentScore: score, finalScore: final, currentGrade: grade });
+                  console.log(`Grade "${cleanSubjectName(course.name)}" (${studentName}): current=${score}% final=${final}%`);
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`Grade fetch error course ${course.id}:`, err);
+          }
+        }));
+
+        // User-level fallback for any courses still missing
+        if (courseGradeMap.size < courses.length) {
+          try {
+            const enrollRes = await fetch(
+              `${CANVAS_BASE_URL}/api/v1/users/${studentId}/enrollments?include[]=current_grades&state[]=active&per_page=100`,
+              { headers }
+            );
+            if (enrollRes.ok) {
+              const enrollments: any[] = await enrollRes.json();
+              for (const e of enrollments) {
+                if (!courseGradeMap.has(e.course_id)) {
+                  const score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
+                  const final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
+                  const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
+                  if (score !== null || grade !== null) {
+                    courseGradeMap.set(e.course_id, { currentScore: score, finalScore: final, currentGrade: grade });
+                    const name = courses.find(c => c.id === e.course_id)?.name ?? String(e.course_id);
+                    console.log(`Grade fallback "${cleanSubjectName(name)}" (${studentName}): current=${score}% final=${final}%`);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`User-level enrollment error for ${studentName}:`, err);
+          }
+        }
+      } else {
+        // Self (student) account: extract from embedded total_scores
+        for (const course of courses) {
+          const enrollments: any[] = (course as any).enrollments ?? [];
+          const e = enrollments.find((e: any) => ["observer", "student", "StudentEnrollment"].includes(e.type));
+          if (e) {
+            const score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
+            const final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
+            const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
+            if (score !== null || grade !== null) {
+              courseGradeMap.set(course.id, { currentScore: score, finalScore: final, currentGrade: grade });
+              console.log(`Grade "${cleanSubjectName(course.name)}" (${studentName}): current=${score}% final=${final}%`);
+            }
+          }
+        }
+      }
+
+      console.log(`Grades: ${courseGradeMap.size}/${courses.length} courses (${studentName})`);
+
+      // Populate allCourseGrades from the grade map
+      for (const course of courses) {
+        const grades = courseGradeMap.get(course.id);
+        allCourseGrades.push({
+          courseId: course.id,
+          subject: cleanSubjectName(course.name),
+          currentScore: grades?.currentScore ?? null,
+          finalScore: grades?.finalScore ?? null,
+          currentGrade: grades?.currentGrade ?? null,
+          studentName: firstName,
+        });
       }
 
       await Promise.all(
@@ -280,27 +477,13 @@ serve(async (req) => {
                   grade = a.submission.grade || undefined;
                   if (a.submission.score != null) score = a.submission.score;
                 } else if (ws === "submitted" || ws === "pending_review") {
-                  status = "done";
+                  status = "progress";
                 } else if (a.has_submitted_submissions) {
-                  status = "done";
+                  status = "progress";
                 }
               }
 
-              const subject = course.name
-                .replace(/\s*H\*\s*/g, " ")
-                .replace(/\s*\(.*?\)\s*/g, "")
-                .replace(/\s*-\s*\d{4}-\d{2,4}\s*/g, "")
-                .replace(/\s*-\s*[A-Z][a-z]+(\s|$).*$/g, "")
-                .replace(/^S\d+\s+/i, "")
-                .replace(/Honors/gi, "Hon.")
-                .replace(/Language Arts/gi, "Lang Arts")
-                .replace(/Physical Science/gi, "Phys Sci")
-                .replace(/Civics\/Economics/gi, "Civics/Econ")
-                .replace(/Technological/gi, "Tech")
-                .replace(/\s+/g, " ")
-                .trim();
-
-              const firstName = studentName === "Student" ? undefined : studentName.split(' ')[0];
+              const subject = cleanSubjectName(course.name);
 
               allAssignments.push({
                 canvasId: a.id,
@@ -326,7 +509,7 @@ serve(async (req) => {
     console.log(`Total assignments collected: ${allAssignments.length}`);
 
     return new Response(
-      JSON.stringify({ assignments: allAssignments }),
+      JSON.stringify({ assignments: allAssignments, courseGrades: allCourseGrades }),
       {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

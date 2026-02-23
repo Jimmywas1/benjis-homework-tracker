@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Assignment } from '@/types/kanban';
+import { Assignment, CourseGrade } from '@/types/kanban';
 import {
   Trophy, Target, Flame, TrendingUp, BookOpen, Star,
   CheckCircle2, Clock, AlertTriangle, Zap, Award, GraduationCap,
@@ -12,6 +12,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 
 interface StatsProps {
   assignments: Assignment[];
+  courseGrades: CourseGrade[];
 }
 
 function getLetterGrade(pct: number): string {
@@ -38,13 +39,14 @@ function gradeColor(pct: number): string {
   return 'text-[hsl(var(--grade-f))]';
 }
 
-function gradeBg(pct: number): string {
-  if (pct >= 90) return 'from-[hsl(var(--grade-a)/0.2)] to-[hsl(var(--grade-a)/0.05)]';
-  if (pct >= 80) return 'from-[hsl(var(--grade-b)/0.2)] to-[hsl(var(--grade-b)/0.05)]';
-  if (pct >= 70) return 'from-[hsl(var(--grade-c)/0.2)] to-[hsl(var(--grade-c)/0.05)]';
-  if (pct >= 60) return 'from-[hsl(var(--grade-d)/0.2)] to-[hsl(var(--grade-d)/0.05)]';
-  return 'from-[hsl(var(--grade-f)/0.2)] to-[hsl(var(--grade-f)/0.05)]';
+function gradeBarColor(pct: number): string {
+  if (pct >= 90) return 'hsl(var(--grade-a))';
+  if (pct >= 80) return 'hsl(var(--grade-b))';
+  if (pct >= 70) return 'hsl(var(--grade-c))';
+  if (pct >= 60) return 'hsl(var(--grade-d))';
+  return 'hsl(var(--grade-f))';
 }
+
 
 const motivationalMessages = [
   { min: 90, messages: ["Absolute legend! 🔥", "You're on fire!", "College-bound superstar!"] },
@@ -69,7 +71,7 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 300, damping: 24 } },
 };
 
-export default function Stats({ assignments }: StatsProps) {
+export default function Stats({ assignments, courseGrades }: StatsProps) {
   const { studentId } = useParams<{ studentId: string }>();
   const activeStudent = studentId
     ? studentId.charAt(0).toUpperCase() + studentId.slice(1)
@@ -88,30 +90,14 @@ export default function Stats({ assignments }: StatsProps) {
     const totalPossible = graded.reduce((sum, a) => sum + (a.totalPoints ?? 0), 0);
     const avgPct = totalPossible > 0 ? (totalEarned / totalPossible) * 100 : 0;
 
-    // Subject breakdown
-    const subjectMap = new Map<string, { earned: number; possible: number; count: number; doneCount: number; totalCount: number }>();
+    // Assignment counts per subject (for completion display)
+    const subjectMap = new Map<string, { doneCount: number; totalCount: number }>();
     for (const a of assignments) {
-      const existing = subjectMap.get(a.subject) || { earned: 0, possible: 0, count: 0, doneCount: 0, totalCount: 0 };
+      const existing = subjectMap.get(a.subject) || { doneCount: 0, totalCount: 0 };
       existing.totalCount++;
       if (a.columnId === 'done') existing.doneCount++;
-      if (a.score != null && a.totalPoints != null && a.totalPoints > 0) {
-        existing.earned += a.score;
-        existing.possible += a.totalPoints;
-        existing.count++;
-      }
       subjectMap.set(a.subject, existing);
     }
-
-    const subjects = Array.from(subjectMap.entries())
-      .map(([name, data]) => ({
-        name,
-        avgPct: data.possible > 0 ? (data.earned / data.possible) * 100 : null,
-        gradeCount: data.count,
-        completionPct: data.totalCount > 0 ? (data.doneCount / data.totalCount) * 100 : 0,
-        totalCount: data.totalCount,
-        doneCount: data.doneCount,
-      }))
-      .sort((a, b) => (b.avgPct ?? -1) - (a.avgPct ?? -1));
 
     // Perfect scores
     const perfectScores = graded.filter(a => a.score === a.totalPoints).length;
@@ -141,12 +127,57 @@ export default function Stats({ assignments }: StatsProps) {
 
     return {
       total, done: done.length, todo: todo.length, inProgress: inProgress.length,
-      overdue: overdue.length, graded: graded.length, avgPct, subjects,
-      perfectScores, completionPct, totalEarned, totalPossible, trendData,
+      overdue: overdue.length, graded: graded.length, avgPct,
+      subjectMap, perfectScores, completionPct, totalEarned, totalPossible, trendData,
     };
   }, [assignments]);
 
-  if (assignments.length === 0) {
+  // Subject breakdown: primary source is Canvas courseGrades (all enrolled courses).
+  // Merge in assignment completion counts. Sort by grade descending, N/A at bottom.
+  const subjectBreakdown = useMemo(() => {
+    const seen = new Set<string>();
+    const result: Array<{
+      name: string;
+      currentScore: number | null;
+      displayLetter: string | null;
+      doneCount: number;
+      totalCount: number;
+    }> = [];
+
+    // Start with all Canvas course grades
+    for (const cg of courseGrades) {
+      if (seen.has(cg.subject)) continue;
+      seen.add(cg.subject);
+      const asgn = stats.subjectMap.get(cg.subject);
+      const rawGrade = cg.currentGrade;
+      const score = cg.currentScore;
+      const displayLetter = rawGrade
+        ? (isNaN(Number(rawGrade)) ? rawGrade : getLetterGrade(Number(rawGrade)))
+        : (score != null ? getLetterGrade(score) : null);
+      result.push({
+        name: cg.subject,
+        currentScore: score,
+        displayLetter,
+        doneCount: asgn?.doneCount ?? 0,
+        totalCount: asgn?.totalCount ?? 0,
+      });
+    }
+
+    // Add any subjects that have assignments but weren't in courseGrades
+    for (const [name, asgn] of stats.subjectMap) {
+      if (seen.has(name)) continue;
+      result.push({ name, currentScore: null, displayLetter: null, ...asgn });
+    }
+
+    return result.sort((a, b) => {
+      if (a.currentScore === null && b.currentScore === null) return 0;
+      if (a.currentScore === null) return 1;
+      if (b.currentScore === null) return -1;
+      return b.currentScore - a.currentScore;
+    });
+  }, [courseGrades, stats.subjectMap]);
+
+  if (assignments.length === 0 && courseGrades.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center min-h-[calc(100vh-3rem)] px-6">
         <p className="text-4xl mb-4">📊</p>
@@ -205,10 +236,10 @@ export default function Stats({ assignments }: StatsProps) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
             { icon: CheckCircle2, label: 'Completed', value: stats.done, color: 'text-[hsl(var(--col-done))]', bg: 'bg-[hsl(var(--col-done)/0.1)]' },
-            { icon: Clock, label: 'In Progress', value: stats.inProgress, color: 'text-[hsl(var(--col-progress))]', bg: 'bg-[hsl(var(--col-progress)/0.1)]' },
+            { icon: Clock, label: 'Handed In', value: stats.inProgress, color: 'text-[hsl(var(--col-progress))]', bg: 'bg-[hsl(var(--col-progress)/0.1)]' },
             { icon: Target, label: 'To Do', value: stats.todo, color: 'text-[hsl(var(--col-todo))]', bg: 'bg-[hsl(var(--col-todo)/0.1)]' },
             { icon: AlertTriangle, label: 'Overdue', value: stats.overdue, color: 'text-[hsl(var(--due-overdue))]', bg: 'bg-[hsl(var(--due-overdue)/0.1)]' },
-          ].map((stat, i) => (
+          ].map((stat) => (
             <motion.div key={stat.label} variants={itemVariants}>
               <Card className="border-border/50 hover:border-border transition-colors">
                 <CardContent className="p-4 flex items-center gap-3">
@@ -292,44 +323,58 @@ export default function Stats({ assignments }: StatsProps) {
           </motion.div>
         </div>
 
-        {/* Subject breakdown */}
-        <motion.div variants={itemVariants}>
-          <Card className="border-border/50">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-2 mb-5">
-                <BookOpen className="w-5 h-5 text-primary" />
-                <h3 className="font-display font-bold text-foreground">Subject Breakdown</h3>
-              </div>
-              <div className="space-y-4">
-                {stats.subjects.map((subject) => (
-                  <div key={subject.name} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="font-body font-medium text-sm text-foreground">{subject.name}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-muted-foreground font-body">
-                          {subject.doneCount}/{subject.totalCount} done
-                        </span>
-                        {subject.avgPct != null && (
-                          <span className={`font-display font-bold text-sm ${gradeColor(subject.avgPct)}`}>
-                            {getLetterGrade(subject.avgPct)} · {subject.avgPct.toFixed(0)}%
-                          </span>
-                        )}
+        {/* Subject breakdown — driven by Canvas quarterly grades */}
+        {subjectBreakdown.length > 0 && (
+          <motion.div variants={itemVariants}>
+            <Card className="border-border/50">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-2 mb-5">
+                  <BookOpen className="w-5 h-5 text-primary" />
+                  <h3 className="font-display font-bold text-foreground">Subject Breakdown</h3>
+                  <span className="text-xs text-muted-foreground font-body ml-1">— current quarter grades from Canvas</span>
+                </div>
+                <div className="space-y-4">
+                  {subjectBreakdown.map((subject) => {
+                    const hasGrade = subject.currentScore != null;
+                    return (
+                      <div key={subject.name} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-body font-medium text-sm text-foreground truncate">{subject.name}</span>
+                          <div className="flex items-center gap-3 flex-shrink-0">
+                            {subject.totalCount > 0 && (
+                              <span className="text-xs text-muted-foreground font-body">
+                                {subject.doneCount}/{subject.totalCount} done
+                              </span>
+                            )}
+                            {hasGrade ? (
+                              <span className={`font-display font-bold text-sm ${gradeColor(subject.currentScore!)}`}>
+                                {subject.displayLetter} · {subject.currentScore!.toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground/60 font-body italic">N/A</span>
+                            )}
+                          </div>
+                        </div>
+                        {/* Grade bar — color matches grade, empty/grey when no grade */}
+                        <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+                          {hasGrade && (
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{
+                                width: `${Math.min(subject.currentScore!, 100)}%`,
+                                backgroundColor: gradeBarColor(subject.currentScore!),
+                              }}
+                            />
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2 items-center">
-                      <div className="flex-1">
-                        <Progress
-                          value={subject.avgPct ?? 0}
-                          className="h-2 bg-muted"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
 
         {/* Grade Trend Chart */}
         {stats.trendData.length >= 2 && (

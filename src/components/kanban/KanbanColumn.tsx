@@ -124,7 +124,7 @@ export default function KanbanColumn({
                 ? `No ${selectedSubject} assignments`
                 : 'Add an assignment!'
               : column.id === 'progress'
-                ? 'Nothing in progress'
+                ? 'Nothing handed in yet'
                 : 'No completed work yet'}
           </div>
         )}

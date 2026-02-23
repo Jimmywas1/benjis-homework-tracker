@@ -1,8 +1,19 @@
 import { useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { SUBJECT_EMOJIS, ColumnId } from '@/types/kanban';
-import type { Assignment, DueStatus } from '@/types/kanban';
+import type { Assignment, DueStatus, CourseGrade } from '@/types/kanban';
 import { toast } from '@/hooks/use-toast';
+
+const COURSE_GRADES_KEY = 'homework-kanban-course-grades';
+
+function loadCourseGrades(): CourseGrade[] {
+  try {
+    const saved = localStorage.getItem(COURSE_GRADES_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
 
 interface CanvasAssignment {
   canvasId: number;
@@ -28,6 +39,7 @@ function matchSubjectEmoji(subject: string): string {
 
 export function useCanvasSync() {
   const [syncing, setSyncing] = useState(false);
+  const [courseGrades, setCourseGrades] = useState<CourseGrade[]>(loadCourseGrades);
 
   const syncFromCanvas = useCallback(
     async (
@@ -43,6 +55,12 @@ export function useCanvasSync() {
 
         const canvasAssignments: CanvasAssignment[] = data.assignments;
 
+        // Store canvas course grades
+        if (data.courseGrades) {
+          setCourseGrades(data.courseGrades);
+          localStorage.setItem(COURSE_GRADES_KEY, JSON.stringify(data.courseGrades));
+        }
+
         if (setAssignments) {
           // ✅ Clean replace: discard all stale Canvas assignments; preserve any manually-added ones
           const manualAssignments = existingAssignments.filter(a => !a.canvasId);
@@ -51,8 +69,9 @@ export function useCanvasSync() {
             // Preserve user's column overrides (e.g. if they dragged an item to In Progress)
             const existing = existingAssignments.find(a => a.canvasId === ca.canvasId);
             const columnId: ColumnId =
-              existing?.columnId ??
-              (ca.status === 'done' ? 'done' : ca.status === 'progress' ? 'progress' : 'todo');
+              ca.status === 'done'
+                ? 'done'
+                : existing?.columnId ?? (ca.status === 'progress' ? 'progress' : 'todo');
             return {
               id: existing?.id ?? crypto.randomUUID(),
               createdAt: existing?.createdAt ?? now + i,
@@ -113,5 +132,5 @@ export function useCanvasSync() {
     []
   );
 
-  return { syncing, syncFromCanvas };
+  return { syncing, syncFromCanvas, courseGrades };
 }

@@ -1,4 +1,7 @@
-project_id = "riwvqhcbatryrrtyuoyl"
+project_id = "xcurdnvouezaeqnzinfc"
 
 [functions.canvas-sync]
+verify_jwt = false
+
+[functions.powerschool-sync]
 verify_jwt = false

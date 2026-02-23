@@ -27,7 +27,7 @@ export interface Column {
 
 export const COLUMNS: Column[] = [
   { id: 'todo', title: 'To Do', emoji: '📋' },
-  { id: 'progress', title: 'In Progress', emoji: '🚀' },
+  { id: 'progress', title: 'Handed In', emoji: '📤' },
   { id: 'done', title: 'Done', emoji: '🎉' },
 ];
 
@@ -46,3 +46,12 @@ export const SUBJECT_EMOJIS: Record<string, string> = {
 };
 
 export const GRADES = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'];
+
+export interface CourseGrade {
+  courseId?: number;
+  subject: string;
+  currentScore: number | null;
+  currentGrade: string | null;
+  finalScore?: number | null;
+  studentName?: string;
+}

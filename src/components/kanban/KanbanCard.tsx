@@ -1,5 +1,5 @@
 import { Assignment, ColumnId, DueStatus } from '@/types/kanban';
-import { Trash2, ArrowRight, GraduationCap, AlertTriangle, Calendar, Clock, CheckCircle } from 'lucide-react';
+import { Trash2, ArrowRight, GraduationCap, AlertTriangle, Calendar, Clock, CheckCircle, Upload } from 'lucide-react';
 
 interface KanbanCardProps {
   assignment: Assignment;
@@ -51,10 +51,17 @@ const doneConfig = {
   borderClass: 'border-l-[hsl(var(--col-done))]',
 };
 
+const handedInConfig = {
+  label: 'Handed In',
+  icon: Upload,
+  className: 'bg-[hsl(var(--due-undated)/0.15)] text-[hsl(var(--due-undated))]',
+  borderClass: 'border-l-[hsl(var(--due-undated))]',
+};
+
 export default function KanbanCard({ assignment, onMove, onDelete }: KanbanCardProps) {
   const next = nextColumn[assignment.columnId];
   const dueStatus = assignment.dueStatus || (assignment.dueDate ? (new Date(assignment.dueDate) < new Date() ? 'overdue' : 'upcoming') : 'undated');
-  const config = assignment.columnId === 'done' ? doneConfig : dueStatusConfig[dueStatus];
+  const config = assignment.columnId === 'done' ? doneConfig : assignment.columnId === 'progress' ? handedInConfig : dueStatusConfig[dueStatus];
   const StatusIcon = config.icon;
 
   return (
@@ -128,7 +135,7 @@ export default function KanbanCard({ assignment, onMove, onDelete }: KanbanCardP
             onClick={() => onMove(assignment.id, next)}
             className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors font-body font-medium"
           >
-            {next === 'progress' ? 'Start' : 'Done'} <ArrowRight size={12} />
+            {next === 'progress' ? 'Hand In' : 'Done'} <ArrowRight size={12} />
           </button>
         )}
       </div>
